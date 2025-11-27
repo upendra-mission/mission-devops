@@ -1,0 +1,111 @@
+---
+- name: Get all NS Groups
+  uri:
+    url: "https://{{ infoblox_vip_hostname }}/wapi/v{{ wapi_version }}/nsgroup"
+    method: GET
+    user: admin
+    password: "{{ infoblox_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+    validate_certs: false
+    use_proxy: no
+  register: currentNSgroups
+  tags:
+    - configure_nsgroups_authoritative
+
+- name: Getting JSON output of current NS Groups
+  set_fact:
+    nsgroupsJSON: "{{ currentNSgroups.json }}"
+  no_log: false
+  tags:
+    - configure_nsgroups_authoritative
+
+- debug:
+    msg: "{{ infoblox_nameserver_groups }}"
+  no_log: false
+  tags:
+    - configure_nsgroups_authoritative
+
+- name: Filtering NS Group names from JSON
+  set_fact:
+    currentNSGroupNames: "{{ nsgroupsJSON | map(attribute='name') | list }}"
+    currentNSGroupNamesLower: "{{ currentNSGroupNames | map('lower') | list }}"
+  no_log: false
+  tags:
+    - configure_nsgroups_authoritative
+
+- name: Extracting NS Group differences
+  set_fact:
+    nsgroup_diff: "{{ (infoblox_nameserver_groups_authoritative | map('lower') | list ) | difference(currentNSGroupNamesLower) }}"
+  tags:
+    - configure_nsgroups_authoritative
+
+- debug:
+    msg: "{{ nsgroup_diff }}"
+  tags:
+    - configure_nsgroups_authoritative
+
+- name: Extracting common NS Groups
+  set_fact:
+    nsgroup_common: "{{ (infoblox_nameserver_groups_authoritative | map('lower') | list ) | intersect(currentNSGroupNamesLower) }}"
+  tags:
+    - configure_nsgroups_authoritative
+
+- name: Create NS Groups | Authoritative Servers
+  uri:
+    url: "https://{{ infoblox_vip_hostname }}/wapi/v{{ wapi_version }}/nsgroup"
+    method: POST
+    user: admin
+    password: "{{ infoblox_admin_password }}"
+    force_basic_auth: true
+    status_code: 201
+    validate_certs: false
+    body_format: json
+    use_proxy: no
+    body:
+      name: "{{ item }}"
+  register: create_ns_group_result
+  loop: "{{ nsgroup_diff }}"
+  when: item | length > 0
+  no_log: false
+  tags:
+    - configure_nsgroups_authoritative
+
+- name: Create NS group name ref map
+  set_fact:
+    currentNSgroupsJSON: "{{ nsgroupsJSON | items2dict(key_name='name', value_name='_ref') }}"
+  no_log: false
+  tags:
+    - configure_nsgroups_authoritative
+
+- name: Combine nsgroup_ref with corresponding inventory nsgroups
+  set_fact:
+    infoblox_nameserver_groups_authoritative_nsgroups: >-
+      {{
+        infoblox_nameserver_groups_authoritative | map('combine',
+        {'_ref': currentNSgroupsJSON[item.name] | default('')}) | list
+      }}
+  run_once: true
+  no_log: false
+  tags:
+    - configure_nsgroups_authoritative
+
+- name: Set attributes on existing NS Group Authoritative Servers
+  uri:
+    url: "https://{{ infoblox_vip_hostname }}/wapi/v{{ wapi_version }}/{{ item._ref }}"
+    method: PUT
+    user: admin
+    password: "{{ infoblox_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+    validate_certs: false
+    body_format: json
+    body:
+      comment: "{{ item.comment | default('') }}"
+      extattrs: "{{ item.extattrs | default({}) }}"
+  register: update_ns_group_result
+  loop: "{{ infoblox_nameserver_groups_authoritative_nsgroups }}"
+  when: item._ref | default('') | length > 0
+  no_log: false
+  tags:
+    - configure_nsgroups_authoritative
